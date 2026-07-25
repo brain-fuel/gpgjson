@@ -1,0 +1,368 @@
+// Go+ allocation-disciplined JSON scanner.
+package gjson
+
+import (
+	"fmt"
+	"strconv"
+	"unicode/utf16"
+	"unicode/utf8"
+)
+
+func skipSpace(source string, offset int) int {
+	for offset < len(source) {
+		switch source[offset] {
+		case ' ', '\t', '\n', '\r':
+			offset++
+		default:
+			return offset
+		}
+	}
+	return offset
+}
+
+func scanValue(source string, start int) (int, Type, error) {
+	start = skipSpace(source, start)
+	if start >= len(source) {
+		return start, Null, fmt.Errorf("gjson: expected value at byte %d", start)
+	}
+	switch source[start] {
+	case '"':
+		end, _, err := scanJSONString(source, start)
+		return end, String, err
+	case '{':
+		end, err := scanComposite(source, start, '{', '}')
+		return end, JSON, err
+	case '[':
+		end, err := scanComposite(source, start, '[', ']')
+		return end, JSON, err
+	case 't':
+		if hasLiteral(source, start, "true") {
+			return start + 4, True, nil
+		}
+	case 'f':
+		if hasLiteral(source, start, "false") {
+			return start + 5, False, nil
+		}
+	case 'n':
+		if hasLiteral(source, start, "null") {
+			return start + 4, Null, nil
+		}
+	default:
+		if source[start] == '-' || source[start] >= '0' && source[start] <= '9' {
+			end, err := scanNumber(source, start)
+			return end, Number, err
+		}
+	}
+	return start, Null, fmt.Errorf("gjson: invalid value at byte %d", start)
+}
+
+func hasLiteral(source string, start int, literal string) bool {
+	return start+len(literal) <= len(source) && source[start:start+len(literal)] == literal
+}
+
+func scanJSONString(source string, start int) (end int, escaped bool, err error) {
+	for i := start + 1; i < len(source); i++ {
+		switch source[i] {
+		case '"':
+			return i + 1, escaped, nil
+		case '\\':
+			escaped = true
+			i++
+			if i >= len(source) {
+				return i, false, fmt.Errorf("gjson: unterminated escape at byte %d", i-1)
+			}
+			if source[i] == 'u' {
+				if i+4 >= len(source) {
+					return i, false, fmt.Errorf("gjson: short unicode escape at byte %d", i-1)
+				}
+				for j := i + 1; j <= i+4; j++ {
+					if !isHex(source[j]) {
+						return j, false, fmt.Errorf("gjson: invalid unicode escape at byte %d", j)
+					}
+				}
+				i += 4
+			} else if !isSimpleEscape(source[i]) {
+				return i, false, fmt.Errorf("gjson: invalid escape at byte %d", i)
+			}
+		default:
+			if source[i] < 0x20 {
+				return i, false, fmt.Errorf("gjson: control byte in string at byte %d", i)
+			}
+		}
+	}
+	return len(source), false, fmt.Errorf("gjson: unterminated string at byte %d", start)
+}
+
+func scanComposite(source string, start int, open, close byte) (int, error) {
+	depth := 1
+	for i := start + 1; i < len(source); i++ {
+		switch source[i] {
+		case '"':
+			end, _, err := scanJSONString(source, i)
+			if err != nil {
+				return i, err
+			}
+			i = end - 1
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return i + 1, nil
+			}
+		case '{':
+			if open != '{' {
+				end, err := scanComposite(source, i, '{', '}')
+				if err != nil {
+					return i, err
+				}
+				i = end - 1
+			}
+		case '[':
+			if open != '[' {
+				end, err := scanComposite(source, i, '[', ']')
+				if err != nil {
+					return i, err
+				}
+				i = end - 1
+			}
+		}
+	}
+	return len(source), fmt.Errorf("gjson: unterminated %c at byte %d", open, start)
+}
+
+func scanNumber(source string, start int) (int, error) {
+	i := start
+	if source[i] == '-' {
+		i++
+		if i == len(source) {
+			return i, fmt.Errorf("gjson: incomplete number at byte %d", start)
+		}
+	}
+	if source[i] == '0' {
+		i++
+	} else if source[i] >= '1' && source[i] <= '9' {
+		for i < len(source) && source[i] >= '0' && source[i] <= '9' {
+			i++
+		}
+	} else {
+		return i, fmt.Errorf("gjson: invalid number at byte %d", i)
+	}
+	if i < len(source) && source[i] == '.' {
+		i++
+		begin := i
+		for i < len(source) && source[i] >= '0' && source[i] <= '9' {
+			i++
+		}
+		if i == begin {
+			return i, fmt.Errorf("gjson: incomplete fraction at byte %d", i)
+		}
+	}
+	if i < len(source) && (source[i] == 'e' || source[i] == 'E') {
+		i++
+		if i < len(source) && (source[i] == '+' || source[i] == '-') {
+			i++
+		}
+		begin := i
+		for i < len(source) && source[i] >= '0' && source[i] <= '9' {
+			i++
+		}
+		if i == begin {
+			return i, fmt.Errorf("gjson: incomplete exponent at byte %d", i)
+		}
+	}
+	return i, nil
+}
+
+func descend(source string, start, end int, part segment) (int, int, error) {
+	key := part.text
+	start = skipSpace(source, start)
+	if start >= end {
+		return -1, -1, fmt.Errorf("gjson: empty container")
+	}
+	if source[start] == '{' {
+		return objectField(source, start, end, key)
+	}
+	if source[start] == '[' {
+		if part.escaped {
+			return -1, -1, nil
+		}
+		if len(key) > 0 && key[0] == '-' {
+			return -1, -1, nil
+		}
+		index, err := strconv.Atoi(key)
+		if err != nil || index < 0 {
+			return -1, -1, nil
+		}
+		return arrayIndex(source, start, end, index)
+	}
+	return -1, -1, nil
+}
+
+func objectField(source string, start, end int, key string) (int, int, error) {
+	i := skipSpace(source, start+1)
+	if i < end && source[i] == '}' {
+		return -1, -1, nil
+	}
+	for i < end {
+		if source[i] != '"' {
+			return -1, -1, fmt.Errorf("gjson: expected object key at byte %d", i)
+		}
+		keyEnd, escaped, err := scanJSONString(source, i)
+		if err != nil {
+			return -1, -1, err
+		}
+		matches := false
+		if !escaped {
+			matches = source[i+1:keyEnd-1] == key
+		} else {
+			matches = decodedStringEqual(source[i+1:keyEnd-1], key)
+		}
+		i = skipSpace(source, keyEnd)
+		if i >= end || source[i] != ':' {
+			return -1, -1, fmt.Errorf("gjson: expected ':' at byte %d", i)
+		}
+		valueStart := skipSpace(source, i+1)
+		valueEnd, _, err := scanValue(source, valueStart)
+		if err != nil {
+			return -1, -1, err
+		}
+		if matches {
+			return valueStart, valueEnd, nil
+		}
+		i = skipSpace(source, valueEnd)
+		if i < end && source[i] == ',' {
+			i = skipSpace(source, i+1)
+			continue
+		}
+		if i < end && source[i] == '}' {
+			return -1, -1, nil
+		}
+		return -1, -1, fmt.Errorf("gjson: expected ',' or '}' at byte %d", i)
+	}
+	return -1, -1, fmt.Errorf("gjson: unterminated object")
+}
+
+func arrayIndex(source string, start, end, target int) (int, int, error) {
+	i := skipSpace(source, start+1)
+	if i < end && source[i] == ']' {
+		return -1, -1, nil
+	}
+	for index := 0; i < end; index++ {
+		valueStart := i
+		valueEnd, _, err := scanValue(source, valueStart)
+		if err != nil {
+			return -1, -1, err
+		}
+		if index == target {
+			return valueStart, valueEnd, nil
+		}
+		i = skipSpace(source, valueEnd)
+		if i < end && source[i] == ',' {
+			i = skipSpace(source, i+1)
+			continue
+		}
+		if i < end && source[i] == ']' {
+			return -1, -1, nil
+		}
+		return -1, -1, fmt.Errorf("gjson: expected ',' or ']' at byte %d", i)
+	}
+	return -1, -1, fmt.Errorf("gjson: unterminated array")
+}
+
+func borrowedAt(source string, start, end int) (Borrowed, error) {
+	_, kind, err := scanValue(source, start)
+	if err != nil {
+		return Borrowed{}, err
+	}
+	v := Borrowed{source: source, start: start, end: end, kind: kind}
+	if kind == String {
+		stringEnd, escaped, err := scanJSONString(source, start)
+		if err != nil {
+			return Borrowed{}, err
+		}
+		v.stringStart, v.stringEnd, v.escaped = start+1, stringEnd-1, escaped
+	}
+	return v, nil
+}
+
+func appendDecodedString(dst []byte, raw string) ([]byte, error) {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '\\' {
+			dst = append(dst, raw[i])
+			continue
+		}
+		i++
+		if i >= len(raw) {
+			return dst, fmt.Errorf("gjson: trailing escape")
+		}
+		switch raw[i] {
+		case '"', '\\', '/':
+			dst = append(dst, raw[i])
+		case 'b':
+			dst = append(dst, '\b')
+		case 'f':
+			dst = append(dst, '\f')
+		case 'n':
+			dst = append(dst, '\n')
+		case 'r':
+			dst = append(dst, '\r')
+		case 't':
+			dst = append(dst, '\t')
+		case 'u':
+			r, next, err := decodeUnicodeEscape(raw, i)
+			if err != nil {
+				return dst, err
+			}
+			i = next
+			var bytes [utf8.UTFMax]byte
+			n := utf8.EncodeRune(bytes[:], r)
+			dst = append(dst, bytes[:n]...)
+		default:
+			return dst, fmt.Errorf("gjson: invalid escape")
+		}
+	}
+	return dst, nil
+}
+
+// utf8.EncodeRune writes through RuneLen only via AppendRune; this helper keeps
+// the destination owned while handling surrogate pairs explicitly.
+func decodeUnicodeEscape(raw string, u int) (rune, int, error) {
+	if u+4 >= len(raw) {
+		return 0, u, fmt.Errorf("gjson: short unicode escape")
+	}
+	first, err := strconv.ParseUint(raw[u+1:u+5], 16, 16)
+	if err != nil {
+		return 0, u, err
+	}
+	r := rune(first)
+	next := u + 4
+	if utf16.IsSurrogate(r) {
+		if next+6 >= len(raw) || raw[next+1] != '\\' || raw[next+2] != 'u' {
+			return 0, u, fmt.Errorf("gjson: unpaired surrogate")
+		}
+		second, err := strconv.ParseUint(raw[next+3:next+7], 16, 16)
+		if err != nil {
+			return 0, u, err
+		}
+		r = utf16.DecodeRune(r, rune(second))
+		if r == utf8.RuneError {
+			return 0, u, fmt.Errorf("gjson: invalid surrogate pair")
+		}
+		next += 6
+	}
+	return r, next, nil
+}
+
+func decodedStringEqual(raw, want string) bool {
+	decoded, err := appendDecodedString(nil, raw)
+	return err == nil && string(decoded) == want
+}
+func isHex(b byte) bool { return b >= '0' && b <= '9' || b >= 'a' && b <= 'f' || b >= 'A' && b <= 'F' }
+func isSimpleEscape(b byte) bool {
+	switch b {
+	case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+		return true
+	}
+	return false
+}

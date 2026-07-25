@@ -1,0 +1,5 @@
+repos:
+  - repo: https://github.com/brain-fuel/goplus
+    rev: v0.28.0
+    hooks:
+      - id: goplus-gen

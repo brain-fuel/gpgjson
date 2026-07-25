@@ -1,0 +1,69 @@
+// Go+ CBOR interoperability for schema-indexed paths.
+package gjson
+
+import (
+	"fmt"
+
+	"goforge.dev/gpgjson/typed"
+	"goforge.dev/goplus/std/cbor"
+)
+
+func lookupCBORInteger(document []byte, segments []typed.Segment) typed.SomeLookup[int] {
+	var current any
+	if err := cbor.Unmarshal(document, &current); err != nil {
+		return typed.MalformedLookup[int]{Result: typed.Malformed[int]{Error: typed.PathError{Message: err.Error()}}}
+	}
+	for _, raw := range segments {
+		switch part := raw.(type) {
+		case typed.Field:
+			var value any
+			var exists bool
+			switch object := current.(type) {
+			case map[string]any:
+				value, exists = object[part.Name]
+			case map[any]any:
+				value, exists = object[part.Name]
+			default:
+				return malformedInteger("CBOR value is not an object")
+			}
+			if !exists {
+				return typed.MissingLookup[int]{Result: typed.Missing[int]{}}
+			}
+			current = value
+		case typed.Index:
+			array, ok := current.([]any)
+			if !ok {
+				return malformedInteger("CBOR value is not an array")
+			}
+			if part.Position < 0 || part.Position >= len(array) {
+				return typed.MissingLookup[int]{Result: typed.Missing[int]{}}
+			}
+			current = array[part.Position]
+		}
+	}
+	if current == nil {
+		return typed.NullLookup[int]{Result: typed.Null[int]{}}
+	}
+	var value int64
+	switch number := current.(type) {
+	case int:
+		value = int64(number)
+	case int64:
+		value = number
+	case uint64:
+		if number > uint64(^uint(0)>>1) {
+			return malformedInteger("CBOR integer overflows int")
+		}
+		value = int64(number)
+	default:
+		return malformedInteger(fmt.Sprintf("CBOR value has type %T, not integer", current))
+	}
+	if int64(int(value)) != value {
+		return malformedInteger("CBOR integer overflows int")
+	}
+	return typed.PresentLookup[int]{Result: typed.Present[int]{Value: int(value)}}
+}
+
+func malformedInteger(message string) typed.SomeLookup[int] {
+	return typed.MalformedLookup[int]{Result: typed.Malformed[int]{Error: typed.PathError{Message: message}}}
+}

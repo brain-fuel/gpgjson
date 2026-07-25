@@ -1,0 +1,135 @@
+// Go+ bridge between JSON documents and indexed schema paths.
+package gjson
+
+import (
+	"strconv"
+
+	"goforge.dev/gpgjson/typed"
+)
+
+func parseTypedSegments(source string) ([]typed.Segment, error) {
+	path, err := CompilePath(source)
+	if err != nil {
+		return nil, err
+	}
+	segments := make([]typed.Segment, len(path.segments))
+	for i, part := range path.segments {
+		if position, err := strconv.Atoi(part.text); err == nil && position >= 0 {
+			segments[i] = typed.Index{Position: position}
+		} else {
+			segments[i] = typed.Field{Name: part.text}
+		}
+	}
+	return segments, nil
+}
+func pathFromTyped(segments []typed.Segment) *Path {
+	parts := make([]segment, len(segments))
+	for i, raw := range segments {
+		switch part := raw.(type) {
+		case typed.Field:
+			parts[i] = segment{text: part.Name}
+		case typed.Index:
+			parts[i] = segment{text: strconv.Itoa(part.Position)}
+		}
+	}
+	path := &Path{segments: parts}
+	for i, part := range parts {
+		if i > 0 {
+			path.key += "."
+		}
+		path.key += Escape(part.text)
+	}
+	path.source = path.key
+	return path
+}
+
+func lookupTypedInteger(document Document, key string) typed.SomeLookup[int] {
+	lookup := document.queryKey(key)
+	if lookup.state == MissingState {
+		return typed.MissingLookup[int]{Result: typed.Missing[int]{}}
+	}
+	if lookup.state == NullState {
+		return typed.NullLookup[int]{Result: typed.Null[int]{}}
+	}
+	if lookup.state == MalformedState {
+		return typed.MalformedLookup[int]{Result: typed.Malformed[int]{Error: typed.PathError{Message: lookup.err.Error()}}}
+	}
+	value, err := lookup.value.Int64()
+	if err != nil {
+		return typed.MalformedLookup[int]{Result: typed.Malformed[int]{Error: typed.PathError{Message: err.Error()}}}
+	}
+	if int64(int(value)) != value {
+		return typed.MalformedLookup[int]{Result: typed.Malformed[int]{Error: typed.PathError{Message: "integer overflows int"}}}
+	}
+	return typed.PresentLookup[int]{Result: typed.Present[int]{Value: int(value)}}
+}
+func lookupTypedBoolean(document Document, key string) typed.SomeLookup[bool] {
+	lookup := document.queryKey(key)
+	if lookup.state == MissingState {
+		return typed.MissingLookup[bool]{Result: typed.Missing[bool]{}}
+	}
+	if lookup.state == NullState {
+		return typed.NullLookup[bool]{Result: typed.Null[bool]{}}
+	}
+	if lookup.state == MalformedState {
+		return typed.MalformedLookup[bool]{Result: typed.Malformed[bool]{Error: typed.PathError{Message: lookup.err.Error()}}}
+	}
+	value, err := lookup.value.Bool()
+	if err != nil {
+		return typed.MalformedLookup[bool]{Result: typed.Malformed[bool]{Error: typed.PathError{Message: err.Error()}}}
+	}
+	return typed.PresentLookup[bool]{Result: typed.Present[bool]{Value: value}}
+}
+func lookupTypedString(document Document, key string) typed.SomeLookup[typed.StringView] {
+	lookup := document.queryKey(key)
+	if lookup.state == MissingState {
+		return typed.MissingLookup[typed.StringView]{Result: typed.Missing[typed.StringView]{}}
+	}
+	if lookup.state == NullState {
+		return typed.NullLookup[typed.StringView]{Result: typed.Null[typed.StringView]{}}
+	}
+	if lookup.state == MalformedState {
+		return typed.MalformedLookup[typed.StringView]{Result: typed.Malformed[typed.StringView]{Error: typed.PathError{Message: lookup.err.Error()}}}
+	}
+	if lookup.value.kind != String {
+		return typed.MalformedLookup[typed.StringView]{Result: typed.Malformed[typed.StringView]{Error: typed.PathError{Message: "JSON value is not a string"}}}
+	}
+	value := typed.StringView{Raw: lookup.value.Raw(), Content: lookup.value.source[lookup.value.stringStart:lookup.value.stringEnd], Escaped: lookup.value.escaped}
+	return typed.PresentLookup[typed.StringView]{Result: typed.Present[typed.StringView]{Value: value}}
+}
+
+func lookupTypedStringInto(document Document, key string, destination *typed.StringView) State {
+	lookup := document.queryKey(key)
+	if lookup.state != ValueState {
+		return lookup.state
+	}
+	if lookup.value.kind != String || destination == nil {
+		return MalformedState
+	}
+	*destination = typed.StringView{Raw: lookup.value.Raw(), Content: lookup.value.source[lookup.value.stringStart:lookup.value.stringEnd], Escaped: lookup.value.escaped}
+	return ValueState
+}
+
+func lookupTypedNumber(document Document, key string) typed.SomeLookup[typed.NumberText] {
+	lookup := document.queryKey(key)
+	if lookup.state == MissingState {
+		return typed.MissingLookup[typed.NumberText]{Result: typed.Missing[typed.NumberText]{}}
+	}
+	if lookup.state == NullState {
+		return typed.NullLookup[typed.NumberText]{Result: typed.Null[typed.NumberText]{}}
+	}
+	if lookup.state == MalformedState {
+		return typed.MalformedLookup[typed.NumberText]{Result: typed.Malformed[typed.NumberText]{Error: typed.PathError{Message: lookup.err.Error()}}}
+	}
+	if lookup.value.kind != Number {
+		return typed.MalformedLookup[typed.NumberText]{Result: typed.Malformed[typed.NumberText]{Error: typed.PathError{Message: "JSON value is not a number"}}}
+	}
+	return typed.PresentLookup[typed.NumberText]{Result: typed.Present[typed.NumberText]{Value: typed.NumberText{Raw: lookup.value.Raw()}}}
+}
+
+func AppendStringView(dst []byte, view typed.StringView) ([]byte, error) {
+	if !view.Escaped {
+		return append(dst, view.Content...), nil
+	}
+	return appendDecodedString(dst, view.Content)
+}
