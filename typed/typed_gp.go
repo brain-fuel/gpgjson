@@ -515,6 +515,7 @@ func PresentValue[T any](value Lookup[T]) T {
 	if _, ok := any(value).(Malformed[T]); ok {
 		panic("goplus: PresentValue: value with index 2 cannot be Malformed")
 	}
+
 	switch __gp_m0 := any(value).(type) {
 	case Present[T]:
 		result := __gp_m0.Value
