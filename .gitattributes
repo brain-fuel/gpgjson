@@ -1,0 +1,5 @@
+# Go+ (.gp) is a strict superset of Go. GitHub Linguist registers `.gp` to
+# Gnuplot, so without this override .gp sources are mis-detected and left
+# unhighlighted. Highlighting them as Go is accurate for the shared syntax and
+# only misses Go+-specific keywords (enum/match/law, |>, >=>).
+*.gp linguist-language=Go
