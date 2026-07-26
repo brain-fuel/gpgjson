@@ -7,7 +7,7 @@ require (
 	github.com/tidwall/pretty v1.2.0
 )
 
-require goforge.dev/goplus/std v0.201.0
+require goforge.dev/goplus/std v0.207.0
 
 tool goforge.dev/goplus/cmd/goplus
 
