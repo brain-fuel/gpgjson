@@ -555,6 +555,13 @@ func dynamicPathInGrammar(path string) bool {
 				for rest < len(path) && path[rest] == ' ' {
 					rest++
 				}
+				// A quoted key ends at a delimiter. Anything else — another
+				// quoted segment (`["::" ""]`) or a bare token
+				// (`{""0:0}`) — leaves the split ambiguous.
+				if rest < len(path) && depth > 0 && parens == 0 &&
+					strings.IndexByte(",:]}.|", path[rest]) < 0 {
+					return false
+				}
 				if rest < len(path) && path[rest] == '"' {
 					return false
 				}
