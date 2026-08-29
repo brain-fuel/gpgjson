@@ -1843,6 +1843,12 @@ func evaluateCompatibilityParts(current Result, parts []compatibilityPathPart) R
 			return projectCompatibilityWithPipe(current, parts[index+1:])
 		}
 		if current.IsArray() && (strings.HasPrefix(part, "#(") || strings.HasPrefix(part, "#[")) {
+			if splits, queryAll := compatibilityQuerySuffixSplits(part); splits {
+				if queryAll {
+					return Result{Type: JSON, Raw: "[]"}
+				}
+				return Result{}
+			}
 			selected, all := queryCompatibilityArray(current, part, parts[index].query)
 			if all {
 				if index == len(parts)-1 {
@@ -18660,6 +18666,66 @@ func compatibilityBooleanQuery(
 		return true
 	}
 	return false
+}
+
+// compatibilityQuerySuffixSplits reports a query-all component whose
+// trailing text upstream tears apart.
+//
+// GJSON's parseArrayPath is neither bracket- nor quote-aware. Having
+// consumed `#(...)#` it keeps scanning the SAME component for `.` and `|`,
+// so a dot anywhere in the suffix — including inside brackets or quotes,
+// as in `#(*)#[x.y]`, `#(*)#{x.y}` or `#(*)#["."]` — splits the component
+// into a remainder that resolves to nothing. The query-all form then
+// yields `[]` and the single-result form yields nothing at all.
+//
+// A suffix with no dot is absorbed and ignored: `#(*)#[x]` and `#(*)#x`
+// both yield the whole array, in upstream and here alike. So the dot is
+// the whole of the divergence, and reproducing it is what a drop-in
+// replacement owes its callers.
+//
+// The query itself is delimited the way upstream delimits it, which is its
+// own quirk: parseQuery counts `[` and `(` up and `]` and `)` down without
+// pairing them, so `#(x]` closes.
+func compatibilityQuerySuffixSplits(part string) (splits, queryAll bool) {
+	if len(part) < 2 || part[0] != '#' ||
+		part[1] != '(' && part[1] != '[' {
+		return false, false
+	}
+	depth := 1
+	index := 2
+	for ; index < len(part); index++ {
+		switch part[index] {
+		case '\\':
+			index++
+		case '[', '(':
+			depth++
+		case ']', ')':
+			depth--
+		case '"':
+			index++
+			for ; index < len(part); index++ {
+				if part[index] == '\\' {
+					index++
+					continue
+				}
+				if part[index] == '"' {
+					break
+				}
+			}
+		}
+		if depth == 0 {
+			break
+		}
+	}
+	if depth != 0 || index >= len(part) {
+		return false, false
+	}
+	suffix := part[index+1:]
+	queryAll = strings.HasPrefix(suffix, "#")
+	if queryAll {
+		suffix = suffix[1:]
+	}
+	return strings.Contains(suffix, "."), queryAll
 }
 
 func compatibilityTypedQueryRight(left, right Result) Result {
