@@ -868,7 +868,14 @@ func evaluateCompatibilityParts(current Result, parts []compatibilityPathPart) R
 		parts[2].text == "#" &&
 		strings.HasPrefix(parts[3].text, `[".#|`) &&
 		strings.Contains(parts[3].text, `""""`) &&
-		strings.Contains(parts[3].text, `|#.`) {
+		// The projection marker has to follow the empty-quote run. Upstream
+		// collapses only when the run comes first, as in `[".#|""""|#."]`.
+		// When the marker precedes it — `[".#|#.""""0"]` — upstream still
+		// projects across the matched elements and yields one empty array
+		// per element, so collapsing to a single `[]` loses the projection.
+		strings.Contains(
+			parts[3].text[strings.Index(parts[3].text, `""""`):],
+			`|#.`) {
 		return Result{Type: JSON, Raw: "[]", Indexes: []int{}}
 	}
 	for index := 0; index < len(parts); index++ {
