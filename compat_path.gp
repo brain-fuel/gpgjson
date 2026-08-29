@@ -18422,6 +18422,22 @@ func matchesCompatibilityResolvedQuery(
 	left Result,
 	compiled *compatibilityCompiledQuery,
 ) bool {
+	// An operand beginning with `~` selects upstream's truthiness
+	// comparison: the remainder names a predicate, the field is replaced by
+	// the boolean that predicate yields, and the comparison then runs
+	// against "true". A remainder upstream does not recognise -- including
+	// the empty one the operand `"~"` leaves behind -- discards the value
+	// entirely, so nothing matches. This runs before the existence check
+	// because `~*` is answerable for a field that does not exist.
+	if strings.HasPrefix(compiled.rightText, "~") {
+		switch token := compiled.rightText[1:]; token {
+		case "*", "null", "true", "false":
+			return compatibilityBooleanQuery(
+				compatibilityTildeEqual(left, token), "true", compiled.relation)
+		default:
+			return false
+		}
+	}
 	if !left.Exists() || compiled.right.Type == Null {
 		return false
 	}
