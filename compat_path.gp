@@ -18564,12 +18564,17 @@ func compatibilityValidQuotedOperand(raw string) bool {
 	// empty string and the query still runs; rejecting it here discarded the
 	// whole query and `#(*>"\A")` matched nothing.
 	//
-	// Only the escape case is admitted. An operand that fails to scan for
-	// some other reason -- embedded quotes splitting it into several strings
-	// -- stays rejected, because upstream's handling of those is a different
-	// path and admitting them here regresses the pinned upstream corpus.
-	return len(raw) >= 2 && raw[len(raw)-1] == '"' &&
-		strings.IndexByte(raw, '\\') >= 0
+	if len(raw) < 2 || raw[len(raw)-1] != '"' {
+		// Upstream strips the quotes only when BOTH ends are quotes. An
+		// operand like `""0` is used exactly as written, as a literal
+		// pattern -- not treated as a malformed string.
+		return true
+	}
+	// Quoted at both ends but still not one JSON string. Admit only the
+	// escape case; embedded quotes split the operand into several strings
+	// and upstream handles those by a different route, so admitting them
+	// here regresses the pinned upstream corpus.
+	return strings.IndexByte(raw, '\\') >= 0
 }
 
 func compatibilityTildeEqual(value Result, token string) bool {
