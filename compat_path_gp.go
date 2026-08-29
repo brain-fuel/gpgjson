@@ -18550,8 +18550,21 @@ func compatibilityValidQuotedOperand(raw string) bool {
 	if raw == "" || raw[0] != '"' {
 		return true
 	}
-	end, _, err := scanJSONString(raw, 0)
-	return err == nil && end == len(raw)
+	if end, _, err := scanJSONString(raw, 0); err == nil && end == len(raw) {
+		return true
+	}
+	// Upstream does not validate an operand's ESCAPES. parseQuery strips the
+	// quotes when both ends are quotes and unescapes with a routine that
+	// truncates at an unknown escape instead of failing, so `"\A"` is the
+	// empty string and the query still runs; rejecting it here discarded the
+	// whole query and `#(*>"\A")` matched nothing.
+	//
+	// Only the escape case is admitted. An operand that fails to scan for
+	// some other reason -- embedded quotes splitting it into several strings
+	// -- stays rejected, because upstream's handling of those is a different
+	// path and admitting them here regresses the pinned upstream corpus.
+	return len(raw) >= 2 && raw[len(raw)-1] == '"' &&
+		strings.IndexByte(raw, '\\') >= 0
 }
 
 func compatibilityTildeEqual(value Result, token string) bool {
@@ -18619,7 +18632,16 @@ func compatibilityUnescapedOperator(query, operator string) int {
 func compatibilityQueryValue(raw string) Result {
 	raw = trimCompatibilitySpace(raw)
 	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
-		return Parse(raw)
+		// Upstream strips the quotes whenever both ends are quotes and
+		// unescapes with a routine that TRUNCATES at an unknown escape
+		// rather than failing, so `"\A"` is the empty string and the query
+		// still runs. Parse treats it as invalid JSON and the operand --
+		// and with it the whole query -- is lost.
+		return Result{
+			Type: String,
+			Raw:  raw,
+			Str:  compatibilityUnescape(raw[1 : len(raw)-1]),
+		}
 	}
 	if raw != "" {
 		return Result{Type: String, Raw: raw, Str: raw}
