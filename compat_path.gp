@@ -466,9 +466,18 @@ func compatibilitySimpleEvaluateRange(
 				valueStart = skipSpace(source, valueStart+1)
 			}
 			key := source[keyStart+1 : keyEnd-1]
-			matched := !escaped &&
-				(wildcard && compatibilityMatchComponent(component, key) ||
-					!wildcard && component == key)
+			if escaped {
+				// The key carries JSON escapes, so its raw text cannot be
+				// compared against the component without unescaping, which
+				// is what the general evaluator does. Refusing the match
+				// here and carrying on would report a MISS for a key that
+				// exists -- `{ "a":0}.*` finds nothing where upstream
+				// matches the literal key ` "a"` -- so hand the whole
+				// lookup back instead of answering it wrongly.
+				return Result{}, false
+			}
+			matched := wildcard && compatibilityMatchComponent(component, key) ||
+				!wildcard && component == key
 			if matched {
 				if last {
 					valueEnd, kind, valueErr := compatibilityScanValue(source, valueStart)
