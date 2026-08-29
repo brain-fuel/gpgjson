@@ -32,6 +32,10 @@ type compatibilityCompiledQuery struct {
 	leftSimple bool
 	relation   pathquery.Relation
 	right      Result
+	// rightText is the operand as WRITTEN, unquoted. GJSON compares a
+	// boolean field against this text rather than against a parsed value,
+	// so `active<=0` asks whether "0" relates to false, not whether 0 does.
+	rightText string
 }
 
 type compatibilityCachedPath struct {
@@ -339,11 +343,17 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 				leftSimple = false
 			}
 		}
+		rightText := trimCompatibilitySpace(rightRaw)
+		if len(rightText) >= 2 && rightText[0] == '"' &&
+			rightText[len(rightText)-1] == '"' {
+			rightText = Parse(rightText).String()
+		}
 		return &compatibilityCompiledQuery{
 			leftPath:   leftPath,
 			leftSimple: leftSimple,
 			relation:   relation,
 			right:      right,
+			rightText:  rightText,
 		}
 	}
 	return nil
@@ -18400,14 +18410,15 @@ func matchesCompatibilityResolvedQuery(
 		return false
 	}
 	right := compatibilityTypedQueryRight(left, compiled.right)
-	if (left.Type == True || left.Type == False) && right.Type == String {
-		return false
-	}
 	if compiled.relation == pathquery.Like || compiled.relation == pathquery.NotLike {
 		if left.Type != String {
 			return false
 		}
 		return pathquery.RelateString(left.String(), compiled.right.Str, compiled.relation)
+	}
+	if left.Type == True || left.Type == False {
+		return compatibilityBooleanQuery(
+			left.Type == True, compiled.rightText, compiled.relation)
 	}
 	if (compiled.relation == pathquery.Greater ||
 		compiled.relation == pathquery.GreaterOrEqual ||
@@ -18599,6 +18610,59 @@ func compatibilityQueryValue(raw string) Result {
 		return Result{Type: String, Raw: raw, Str: raw}
 	}
 	return Result{}
+}
+
+// compatibilityBooleanQuery relates a boolean field to a query operand.
+//
+// GJSON does not order a boolean against a parsed value. It switches on the
+// field's type and compares the operand TEXT, and the ordering operators it
+// derives are not a total order at all -- they are asymmetric in a way no
+// coercion reproduces:
+//
+//	value  ==            !=            >              >=     <              <=
+//	true   op == "true"  op != "true"  op == "false"  true    false          false
+//	false  op == "false" op != "false" false          false   op == "true"   true
+//
+// `true >= x` holds for every operand including "x" and null, while
+// `true <= x` holds for none -- not even x == "true". The false row is its
+// mirror. This table was read off upstream v1.19.0 rather than reasoned
+// about, because reasoning produces the plausible symmetric version, which
+// is wrong: `active<=true` selects the FALSE element.
+//
+// Reproducing it is the point. A drop-in replacement owes its callers the
+// behaviour they already depend on, including where that behaviour is a
+// quirk.
+func compatibilityBooleanQuery(
+	value bool, operand string, relation pathquery.Relation,
+) bool {
+	if value {
+		switch relation {
+		case pathquery.Equal:
+			return operand == "true"
+		case pathquery.NotEqual:
+			return operand != "true"
+		case pathquery.Greater:
+			return operand == "false"
+		case pathquery.GreaterOrEqual:
+			return true
+		case pathquery.Less, pathquery.LessOrEqual:
+			return false
+		}
+		return false
+	}
+	switch relation {
+	case pathquery.Equal:
+		return operand == "false"
+	case pathquery.NotEqual:
+		return operand != "false"
+	case pathquery.Greater, pathquery.GreaterOrEqual:
+		return false
+	case pathquery.Less:
+		return operand == "true"
+	case pathquery.LessOrEqual:
+		return true
+	}
+	return false
 }
 
 func compatibilityTypedQueryRight(left, right Result) Result {

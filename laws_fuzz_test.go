@@ -489,25 +489,45 @@ func balancedDynamicPath(path string) bool {
 	return !quoted && !escaped && len(stack) == 0
 }
 
-// dynamicPathInGrammar reports whether a path lies inside the syntax the
-// compatibility tier claims: quotes balanced, containers balanced, and no
-// path metacharacter buried inside a quoted key that sits inside a
-// container literal.
+// dynamicPathInGrammar reports whether a path lies inside GJSON's
+// DOCUMENTED path syntax — the syntax this package claims parity within.
 //
-// That last clause is the one that matters. `[".#|#.""""0"]` is not a path
-// anyone writes; it is fuzzer output in a region where GJSON has no
-// specification, and where upstream's own answers include text that is not
-// JSON — `[").[0A).0|!0"]` returns Raw `[0"]`, an array literal with an
-// unbalanced quote. gpgjson reproduces several of those byte-for-byte on
-// purpose, because bug-for-bug agreement is what a drop-in replacement
-// owes its callers. What it cannot owe is agreement on EVERY such path:
-// the region is unbounded, upstream's behaviour in it is accidental, and
-// each disagreement costs a hand-written recovery branch (compat_path.gp
-// already carries dozens).
+// Written from the GJSON path reference rather than tightened against
+// whatever the fuzzer produced last, which is what makes it converge:
 //
-// So the differential is bounded here rather than chased there. Parity
-// already achieved stays asserted by TestDynamicPathCorpus; the fuzzer
-// stops generating new obligations outside the claimed grammar.
+//   - components separated by `.`, with `\` escaping the next byte;
+//   - `*` and `?` wildcards within a component;
+//   - `#` for array count, for projection, and as a query head;
+//   - queries `#(...)` and `#(...)#`, parentheses balanced;
+//   - multipaths `[...]` and `{...}`, brackets balanced;
+//   - literals `!true`, `!false`, `!null`, `!"s"`, `!123`, which the
+//     reference defines ONLY in a multipath element position;
+//   - the comparison operators, of which `!=` and `!%` are the two that
+//     contain `!`;
+//   - `|` pipes between components, and `@name` / `@name:arg` modifiers.
+//
+// Three exclusions carry the weight, because the fuzzer reaches them
+// constantly and upstream has no specification for any of them:
+//
+//   - `|!literal`. Piping INTO a literal is not documented syntax, and it
+//     is where the surviving divergences live (`*.*.#.0.#|!0|1`).
+//   - A path metacharacter buried in a quoted key inside a container or a
+//     query, as
+//     in `[".#|#.""""0"]`, or two quoted segments butted together, as in
+//     `["::" ""]`, or butted onto a bare token, as in `{0"":0}`. All
+//     leave the component split ambiguous, and upstream resolves them
+//     through its document-aware engine.
+//   - An empty query `#()` or empty multipath `#[]`, neither of which
+//     the reference shows.
+//   - Unbalanced quotes, brackets, or parentheses, any parenthesis that
+//     is not a `#(` query head, and any backslash escaping something the
+//     reference does not list as escapable.
+//
+// Outside the bound upstream's answers are accidental — `[").[0A).0|!0"]`
+// returns Raw `[0"]`, an array literal with an unbalanced quote in it —
+// so agreement there is worth neither a hand-written recovery branch nor
+// a red gate. Agreement already reached in that region is not given up:
+// TestDynamicPathCorpus keeps asserting all of it.
 func dynamicPathInGrammar(path string) bool {
 	depth, parens := 0, 0
 	inQuote, escaped := false, false
@@ -515,6 +535,12 @@ func dynamicPathInGrammar(path string) bool {
 		value := path[index]
 		if escaped {
 			escaped = false
+			// "The dot and wildcard characters can be escaped with '\\'."
+			// Outside a quoted segment that is the whole of it; escaping
+			// anything else, as `@this:\\"|0` does, is not documented.
+			if !inQuote && strings.IndexByte(".*?\\", value) < 0 {
+				return false
+			}
 			continue
 		}
 		switch {
@@ -523,29 +549,78 @@ func dynamicPathInGrammar(path string) bool {
 		case inQuote:
 			if value == '"' {
 				inQuote = false
-			} else if depth > 0 && strings.IndexByte("|!()[]{}", value) >= 0 {
+				// A multipath element is one path. Two quoted segments
+				// butted together — `["::" ""]`, or the `""""` runs the
+				// fuzzer favours — are not an element, and upstream splits
+				// them by rules it never wrote down.
+				rest := index + 1
+				for rest < len(path) && path[rest] == ' ' {
+					rest++
+				}
+				if rest < len(path) && path[rest] == '"' {
+					return false
+				}
+			} else if (depth > 0 || parens > 0) &&
+				strings.IndexByte("|!()[]{}", value) >= 0 {
 				return false
 			}
 		case value == '"':
+			// Inside a multipath, a quoted segment starts an element or
+			// names one; it cannot be butted onto a bare token, as in
+			// `{0"":0}`. Queries are exempt: there a quote legitimately
+			// follows a comparison operator.
+			if depth > 0 && parens == 0 {
+				prev := index - 1
+				for prev >= 0 && path[prev] == ' ' {
+					prev--
+				}
+				if prev >= 0 && strings.IndexByte("[{,:", path[prev]) < 0 {
+					return false
+				}
+			}
 			inQuote = true
 		case value == '[' || value == '{':
 			depth++
 		case value == ']' || value == '}':
+			// A multipath selects something. `#[]` is not a form the
+			// reference shows.
+			if index > 0 && (path[index-1] == '[' || path[index-1] == '{') {
+				return false
+			}
 			depth--
 			if depth < 0 {
 				return false
 			}
 		case value == '(':
-			// A parenthesis is only a query in GJSON: `#(...)`. A bare group
-			// like `((.0).[""].0).[0]` is not syntax the tier claims, and
-			// upstream simply reports it missing.
+			// A parenthesis is only ever a query head in GJSON.
 			if index == 0 || path[index-1] != '#' {
 				return false
 			}
 			parens++
 		case value == ')':
+			// A query tests something. `#()` is not a form the reference
+			// shows either.
+			if index > 0 && path[index-1] == '(' {
+				return false
+			}
 			parens--
 			if parens < 0 {
+				return false
+			}
+		case value == '!':
+			// `!=` and `!%` are comparisons. Otherwise `!` introduces a
+			// literal, and the reference places literals only at a
+			// multipath element position.
+			if index+1 < len(path) &&
+				(path[index+1] == '=' || path[index+1] == '%') {
+				continue
+			}
+			if depth == 0 || index == 0 {
+				return false
+			}
+			switch path[index-1] {
+			case '[', '{', ',', ':':
+			default:
 				return false
 			}
 		}
