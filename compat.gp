@@ -379,10 +379,12 @@ func compatibilityUnescape(raw string) string {
 				if index+4 >= len(raw) {
 					return string(output)
 				}
-				first, err := strconv.ParseUint(raw[index+1:index+5], 16, 16)
-				if err != nil {
-					return string(output)
-				}
+				// Upstream's runeit discards the parse error and uses the
+				// zero value, so `\u0X00` contributes NUL rather than
+				// truncating the string. Truncating instead turned a
+				// pattern like `*\u0X00` into a bare `*`, which matches
+				// everything upstream refuses.
+				first, _ := strconv.ParseUint(raw[index+1:index+5], 16, 16)
 				value := rune(first)
 				index += 4
 				if utf16.IsSurrogate(value) && index+6 < len(raw) &&
