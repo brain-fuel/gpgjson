@@ -517,8 +517,6 @@ func balancedDynamicPath(path string) bool {
 //     `["::" ""]`, or butted onto a bare token, as in `{0"":0}`. All
 //     leave the component split ambiguous, and upstream resolves them
 //     through its document-aware engine.
-//   - An empty query `#()` or empty multipath `#[]`, neither of which
-//     the reference shows.
 //   - Unbalanced quotes, brackets, or parentheses, any parenthesis that
 //     is not a `#(` query head, and any backslash escaping something the
 //     reference does not list as escapable.
@@ -582,11 +580,6 @@ func dynamicPathInGrammar(path string) bool {
 		case value == '[' || value == '{':
 			depth++
 		case value == ']' || value == '}':
-			// A multipath selects something. `#[]` is not a form the
-			// reference shows.
-			if index > 0 && (path[index-1] == '[' || path[index-1] == '{') {
-				return false
-			}
 			depth--
 			if depth < 0 {
 				return false
@@ -598,11 +591,6 @@ func dynamicPathInGrammar(path string) bool {
 			}
 			parens++
 		case value == ')':
-			// A query tests something. `#()` is not a form the reference
-			// shows either.
-			if index > 0 && path[index-1] == '(' {
-				return false
-			}
 			parens--
 			if parens < 0 {
 				return false
