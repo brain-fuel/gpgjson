@@ -331,7 +331,11 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 		if relation == pathquery.Like || relation == pathquery.NotLike {
 			pattern := trimCompatibilitySpace(rightRaw)
 			if len(pattern) >= 2 && pattern[0] == '"' && pattern[len(pattern)-1] == '"' {
-				pattern = Parse(pattern).String()
+				// Same truncating unescape upstream applies to a query
+				// operand: `"*a**\A"` is the pattern `*a**`, not a
+				// parse failure.
+				pattern = compatibilityUnescape(
+					pattern[1 : len(pattern)-1])
 			}
 			right = Result{Type: String, Str: pattern}
 		}
@@ -18515,7 +18519,11 @@ func matchesCompatibilityQuery(candidate Result, query string) bool {
 					return false
 				}
 				if len(pattern) >= 2 && pattern[0] == '"' && pattern[len(pattern)-1] == '"' {
-					pattern = Parse(pattern).String()
+					// Same truncating unescape upstream applies to a query
+					// operand: `"*a**\A"` is the pattern `*a**`, not a
+					// parse failure.
+					pattern = compatibilityUnescape(
+						pattern[1 : len(pattern)-1])
 				}
 				relation, _ := pathquery.ParseRelation(operator)
 				return pathquery.RelateString(left.String(), pattern, relation)
