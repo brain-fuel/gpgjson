@@ -321,9 +321,11 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 			continue
 		}
 		rightRaw := query[at+len(operator):]
-		if trimCompatibilitySpace(rightRaw) == "" {
-			return nil
-		}
+		// An EMPTY operand is a query upstream runs, not one it rejects.
+		// parseQuery takes the value part from the first of `!=<>%`, peels
+		// the operator off it and trims what is left, so `#[ac*>=]` is the
+		// operator `>=` against the empty string -- which the boolean table
+		// then answers true for a true field.
 		if !compatibilityValidQuotedOperand(trimCompatibilitySpace(rightRaw)) {
 			return nil
 		}
@@ -18392,10 +18394,15 @@ func compatibilityStripQueryEscapes(query string) (string, bool) {
 			first = at
 		}
 	}
-	limit := len(query)
-	if first >= 0 {
-		limit = first
+	// Without an operator there is no boundary to strip up to, and
+	// stripping the whole query can MANUFACTURE one: `*\>` has an escaped
+	// `>` that upstream never reads as an operator, and removing the escape
+	// turns it into `*>`, a comparison against the empty string that
+	// matches everything. Leave those queries alone.
+	if first < 0 {
+		return "", false
 	}
+	limit := first
 	if strings.IndexByte(query[limit:], '\\') >= 0 {
 		return "", false
 	}
@@ -18750,7 +18757,9 @@ func compatibilityQueryValue(raw string) Result {
 	if raw != "" {
 		return Result{Type: String, Raw: raw, Str: raw}
 	}
-	return Result{}
+	// The empty operand is the empty STRING, not an absent value; upstream
+	// compares against it rather than refusing the query.
+	return Result{Type: String, Raw: "", Str: ""}
 }
 
 // compatibilityBooleanQuery relates a boolean field to a query operand.
