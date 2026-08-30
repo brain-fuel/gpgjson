@@ -1876,6 +1876,15 @@ func evaluateCompatibilityParts(current Result, parts []compatibilityPathPart) R
 					current = selected
 					continue
 				}
+				// A query-all that matched NOTHING ends the path. Upstream's
+				// array walk sets the empty array and returns "no hit", and
+				// the dot-continuation is only applied on a hit -- so
+				// `#()#.#()#` and `#()#.first` are both just `[]`. A pipe
+				// attached to the same component still runs, which is why
+				// the branch above comes first: `#()#|#` is `0`.
+				if selected.Raw == "[]" {
+					return selected
+				}
 				return projectCompatibilityWithPipe(selected, parts[index+1:])
 			}
 			current = selected
