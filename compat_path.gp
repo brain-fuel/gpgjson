@@ -18612,30 +18612,15 @@ func matchesCompatibilityQuery(candidate Result, query string) bool {
 	return test.Exists()
 }
 
+// compatibilityValidQuotedOperand reports whether an operand is one this
+// compiler will handle. Upstream validates nothing: parseQuery strips the
+// outer quotes whenever the first and last bytes are quotes, unescapes with
+// a routine that truncates at an unknown escape, and runs the query. So
+// `"\A"` is the empty string, `""0""` is the pattern `"0"`, and `""0` is a
+// literal used as written -- none of them are errors there, and refusing
+// any of them loses a query upstream executes.
 func compatibilityValidQuotedOperand(raw string) bool {
-	if raw == "" || raw[0] != '"' {
-		return true
-	}
-	if end, _, err := scanJSONString(raw, 0); err == nil && end == len(raw) {
-		return true
-	}
-	// Upstream does not validate an operand's ESCAPES. parseQuery strips the
-	// quotes when both ends are quotes and unescapes with a routine that
-	// truncates at an unknown escape instead of failing, so `"\A"` is the
-	// empty string and the query still runs; rejecting it here discarded the
-	// whole query and `#(*>"\A")` matched nothing.
-	//
-	if len(raw) < 2 || raw[len(raw)-1] != '"' {
-		// Upstream strips the quotes only when BOTH ends are quotes. An
-		// operand like `""0` is used exactly as written, as a literal
-		// pattern -- not treated as a malformed string.
-		return true
-	}
-	// Quoted at both ends but still not one JSON string. Admit only the
-	// escape case; embedded quotes split the operand into several strings
-	// and upstream handles those by a different route, so admitting them
-	// here regresses the pinned upstream corpus.
-	return strings.IndexByte(raw, '\\') >= 0
+	return true
 }
 
 func compatibilityTildeEqual(value Result, token string) bool {
