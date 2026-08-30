@@ -18418,7 +18418,22 @@ func compatibilityStripQueryEscapes(query string) (string, bool) {
 	if !unescapedWildcard {
 		return "", false
 	}
-	return strings.ReplaceAll(left, `\`, "") + query[limit:], true
+	// Strip the way upstream builds its part: a backslash is dropped and the
+	// byte after it kept literally. `\\*` therefore becomes `\*` -- a
+	// pattern for the literal key `*` -- not the match-anything `*` that
+	// removing every backslash would produce.
+	stripped := make([]byte, 0, len(left))
+	for index := 0; index < len(left); index++ {
+		if left[index] == '\\' {
+			index++
+			if index < len(left) {
+				stripped = append(stripped, left[index])
+			}
+			continue
+		}
+		stripped = append(stripped, left[index])
+	}
+	return string(stripped) + query[limit:], true
 }
 
 func compatibilityQueryClose(expression string, closing byte) int {
