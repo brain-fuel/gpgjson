@@ -610,7 +610,11 @@ func resultOf(lookup Lookup) Result {
 
 func Get(json, path string) Result {
 	if path == "" {
-		return Result{}
+		// Not "no path" -- upstream reads it as ONE empty component, which
+		// selects the key named "". That is why an empty multipath entry
+		// contributes a value rather than vanishing: `{a,}` is `a` and the
+		// empty path, and on an object carrying a `""` key both resolve.
+		return compatibilityGet(json, path)
 	}
 	// Dynamic grammar is not accepted by CompilePath. Route it directly to
 	// the compatibility evaluator instead of allocating a doomed diagnostic.

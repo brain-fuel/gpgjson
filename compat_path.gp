@@ -69,7 +69,10 @@ func compatibilityGetDynamic(json, path string) Result {
 
 func compatibilityGetMode(json, path string, dynamicKnown bool) Result {
 	if path == "" {
-		return Result{}
+		// One EMPTY component, which selects the key named "". Upstream
+		// reads it that way, which is what makes an empty multipath entry
+		// contribute a value instead of vanishing.
+		return compatibilityChild(Parse(json), "")
 	}
 	if strings.HasPrefix(path, `#[".[)|!`) &&
 		strings.HasSuffix(path, `"]`) {
