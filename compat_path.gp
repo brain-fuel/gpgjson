@@ -18643,17 +18643,33 @@ func compatibilityTildeEqual(value Result, token string) bool {
 	case "*":
 		return value.Exists()
 	case "null":
-		return !value.Exists() || value.Type == Null
+		return value.Type == Null
 	case "true":
-		return value.Type == True ||
-			value.Type == Number && value.Num == 1 ||
-			value.Type == String &&
-				(strings.EqualFold(value.Str, "true") || value.Str == "1")
+		// Upstream's trueish: any NON-ZERO number, not just 1, and a string
+		// through ParseBool -- which accepts "t" and "T" as well as "true"
+		// and "1".
+		switch value.Type {
+		case True:
+			return true
+		case Number:
+			return value.Num != 0
+		case String:
+			parsed, err := strconv.ParseBool(strings.ToLower(value.Str))
+			return err == nil && parsed
+		}
+		return false
 	case "false":
-		return !value.Exists() || value.Type == Null || value.Type == False ||
-			value.Type == Number && value.Num == 0 ||
-			value.Type == String &&
-				(strings.EqualFold(value.Str, "false") || value.Str == "0")
+		// Upstream's falseish, the mirror of it.
+		switch value.Type {
+		case Null, False:
+			return true
+		case Number:
+			return value.Num == 0
+		case String:
+			parsed, err := strconv.ParseBool(strings.ToLower(value.Str))
+			return err == nil && !parsed
+		}
+		return false
 	}
 	return strings.EqualFold(value.String(), token)
 }
