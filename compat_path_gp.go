@@ -306,15 +306,8 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 		return nil
 	}
 	query := trimCompatibilitySpace(expression[2:close])
-	// `!=~` and `==~` are not operators upstream knows. It reads `!=` and
-	// leaves `~*` as the VALUE, where a leading `~` selects the truthiness
-	// comparison. Listing them here consumed the tilde and lost the query.
-	operators := []string{"!=", ">=", "<=", "==", "!%", "=", ">", "<", "%"}
-	for _, operator := range operators {
-		at := compatibilityUnescapedOperator(query, operator)
-		if at < 0 {
-			continue
-		}
+	at, operator, found := compatibilityQueryOperator(query)
+	if found {
 		rightRaw := query[at+len(operator):]
 		// An EMPTY operand is a query upstream runs, not one it rejects.
 		// parseQuery takes the value part from the first of `!=<>%`, peels
@@ -366,6 +359,62 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 		}
 	}
 	return nil
+}
+
+// compatibilityQueryOperator locates a query's operator the way upstream
+// does: by POSITION, not by trying spellings in a fixed order. parseQuery
+// takes the value part from the first of `!`, `=`, `<`, `>` or `%` seen at
+// the query's own depth, then reads the operator off the front of it.
+//
+// Order matters more than it looks. Trying spellings in sequence picks the
+// `=` out of `*>0"\\"=""` because `=` is tried before `>`, where upstream
+// takes the `>` that comes first and treats the rest as the operand.
+func compatibilityQueryOperator(query string) (int, string, bool) {
+	depth := 1
+	found := -1
+	for index := 0; index < len(query); index++ {
+		if depth == 1 && found < 0 {
+			switch query[index] {
+			case '!', '=', '<', '>', '%':
+				found = index
+				continue
+			}
+		}
+		switch query[index] {
+		case '\\':
+			index++
+		case '[', '(':
+			depth++
+		case ']', ')':
+			depth--
+		case '"':
+			index++
+			for ; index < len(query); index++ {
+				if query[index] == '\\' {
+					index++
+					continue
+				}
+				if query[index] == '"' {
+					break
+				}
+			}
+		}
+	}
+	if found < 0 {
+		return 0, "", false
+	}
+	value := query[found:]
+	if len(value) > 1 {
+		switch {
+		case value[0] == '!' && value[1] == '=',
+			value[0] == '!' && value[1] == '%',
+			value[0] == '<' && value[1] == '=',
+			value[0] == '>' && value[1] == '=',
+			value[0] == '=' && value[1] == '=':
+			return found, value[:2], true
+		}
+	}
+	return found, value[:1], true
 }
 
 func annotateCompatibilitySimplePaths(parts []compatibilityPathPart) {
