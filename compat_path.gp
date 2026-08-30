@@ -304,7 +304,11 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 	}
 	query := trimCompatibilitySpace(expression[2:close])
 	if strings.Contains(query, `\`) {
-		return nil
+		stripped, ok := compatibilityStripQueryEscapes(query)
+		if !ok {
+			return nil
+		}
+		query = stripped
 	}
 	query = strings.TrimSuffix(query, `\`)
 	operators := []string{"!=~", "==~", "!=", ">=", "<=", "==", "!%", "=", ">", "<", "%"}
@@ -18359,6 +18363,62 @@ func compatibilityObjectFieldAndEnd(
 		}
 		return 0, Result{}, false
 	}
+}
+
+// compatibilityStripQueryEscapes removes the backslashes from a query's
+// LEFT PATH, which is what upstream does: its component parser strips an
+// escape into the part and then pattern-matches the result, so the escaped
+// `*` in `#(\*c*!=0)` behaves as a wildcard anyway and selects the key
+// `active`.
+//
+// An escape at or after the operator refuses the query, as a blanket check
+// used to refuse every query carrying one. That is not upstream's rule --
+// upstream honours an escape in a pattern operand, so `#(first%D\*)` looks
+// for a literal asterisk and finds none -- but the operand loses its
+// backslash somewhere between the path split and the matcher, and a query
+// like `#[*%*\ ]` then matches on the bare `*` where upstream matches
+// nothing. Refusing keeps that agreement until the operand path is fixed;
+// the defect is recorded in GOALS.md.
+func compatibilityStripQueryEscapes(query string) (string, bool) {
+	first := -1
+	for _, operator := range []string{
+		"!=~", "==~", "!=", ">=", "<=", "==", "!%", "=", ">", "<", "%",
+	} {
+		at := compatibilityUnescapedOperator(query, operator)
+		if at >= 0 && (first < 0 || at < first) {
+			first = at
+		}
+	}
+	limit := len(query)
+	if first >= 0 {
+		limit = first
+	}
+	if strings.IndexByte(query[limit:], '\\') >= 0 {
+		return "", false
+	}
+	// Stripping is only half of what upstream does. Its component parser
+	// sets the wildcard flag from an UNESCAPED `*` or `?` alone, so `\*c*`
+	// becomes the pattern `*c*` -- the trailing star makes it a pattern and
+	// the escaped one is just a character in it -- while `\*` becomes the
+	// literal key `*` and is matched exactly. Without an unescaped wildcard
+	// to keep, stripping would turn an exact lookup into a match-anything
+	// pattern, so the query is refused instead and behaves as it did.
+	left := query[:limit]
+	unescapedWildcard := false
+	for index := 0; index < len(left); index++ {
+		if left[index] == '\\' {
+			index++
+			continue
+		}
+		if left[index] == '*' || left[index] == '?' {
+			unescapedWildcard = true
+			break
+		}
+	}
+	if !unescapedWildcard {
+		return "", false
+	}
+	return strings.ReplaceAll(left, `\`, "") + query[limit:], true
 }
 
 func compatibilityQueryClose(expression string, closing byte) int {
