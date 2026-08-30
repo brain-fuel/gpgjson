@@ -303,12 +303,8 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 		return nil
 	}
 	query := trimCompatibilitySpace(expression[2:close])
-	if strings.Contains(query, `\`) {
-		stripped, ok := compatibilityStripQueryEscapes(query)
-		if !ok {
-			return nil
-		}
-		query = stripped
+	if strings.Contains(query, `\`) && !compatibilityQueryEscapesLeftOnly(query) {
+		return nil
 	}
 	query = strings.TrimSuffix(query, `\`)
 	// `!=~` and `==~` are not operators upstream knows. It reads `!=` and
@@ -18370,80 +18366,37 @@ func compatibilityObjectFieldAndEnd(
 	}
 }
 
-// compatibilityStripQueryEscapes removes the backslashes from a query's
-// LEFT PATH, which is what upstream does: its component parser strips an
-// escape into the part and then pattern-matches the result, so the escaped
-// `*` in `#(\*c*!=0)` behaves as a wildcard anyway and selects the key
-// `active`.
+// compatibilityQueryEscapesLeftOnly reports whether every backslash in a
+// query falls in its LEFT PATH.
 //
-// An escape at or after the operator refuses the query, as a blanket check
-// used to refuse every query carrying one. That is not upstream's rule --
-// upstream honours an escape in a pattern operand, so `#(first%D\*)` looks
-// for a literal asterisk and finds none -- but the operand loses its
-// backslash somewhere between the path split and the matcher, and a query
-// like `#[*%*\ ]` then matches on the bare `*` where upstream matches
-// nothing. Refusing keeps that agreement until the operand path is fixed;
-// the defect is recorded in GOALS.md.
-func compatibilityStripQueryEscapes(query string) (string, bool) {
+// A left-path escape needs no special handling: the component splitter
+// already does exactly what upstream's parser does with one -- drop the
+// backslash, keep the byte after it, and set the wildcard flag only from
+// an UNESCAPED `*` or `?`. So `\*c*` becomes the pattern `*c*` and selects
+// `active`, while `\*` becomes the literal key `*` and matches nothing.
+// An earlier cut stripped the escapes here as well and got `\\**` wrong by
+// stripping twice, turning a pattern for keys beginning with `*` into one
+// that matches everything.
+//
+// An escape at or after the operator still refuses the query. Upstream
+// honours one there -- `#(first%D\*)` looks for a literal asterisk and
+// finds none -- but the operand loses its backslash between the split and
+// the matcher, so `#[*%*\ ]` would match on a bare `*` where upstream
+// matches nothing. That defect is recorded in GOALS.md.
+func compatibilityQueryEscapesLeftOnly(query string) bool {
 	first := -1
 	for _, operator := range []string{
-		"!=~", "==~", "!=", ">=", "<=", "==", "!%", "=", ">", "<", "%",
+		"!=", ">=", "<=", "==", "!%", "=", ">", "<", "%",
 	} {
 		at := compatibilityUnescapedOperator(query, operator)
 		if at >= 0 && (first < 0 || at < first) {
 			first = at
 		}
 	}
-	// Without an operator there is no boundary to strip up to, and
-	// stripping the whole query can MANUFACTURE one: `*\>` has an escaped
-	// `>` that upstream never reads as an operator, and removing the escape
-	// turns it into `*>`, a comparison against the empty string that
-	// matches everything. Leave those queries alone.
 	if first < 0 {
-		return "", false
+		return false
 	}
-	limit := first
-	if strings.IndexByte(query[limit:], '\\') >= 0 {
-		return "", false
-	}
-	// Stripping is only half of what upstream does. Its component parser
-	// sets the wildcard flag from an UNESCAPED `*` or `?` alone, so `\*c*`
-	// becomes the pattern `*c*` -- the trailing star makes it a pattern and
-	// the escaped one is just a character in it -- while `\*` becomes the
-	// literal key `*` and is matched exactly. Without an unescaped wildcard
-	// to keep, stripping would turn an exact lookup into a match-anything
-	// pattern, so the query is refused instead and behaves as it did.
-	left := query[:limit]
-	unescapedWildcard := false
-	for index := 0; index < len(left); index++ {
-		if left[index] == '\\' {
-			index++
-			continue
-		}
-		if left[index] == '*' || left[index] == '?' {
-			unescapedWildcard = true
-			break
-		}
-	}
-	if !unescapedWildcard {
-		return "", false
-	}
-	// Strip the way upstream builds its part: a backslash is dropped and the
-	// byte after it kept literally. `\\*` therefore becomes `\*` -- a
-	// pattern for the literal key `*` -- not the match-anything `*` that
-	// removing every backslash would produce.
-	stripped := make([]byte, 0, len(left))
-	for index := 0; index < len(left); index++ {
-		if left[index] == '\\' {
-			index++
-			if index < len(left) {
-				stripped = append(stripped, left[index])
-			}
-			continue
-		}
-		stripped = append(stripped, left[index])
-	}
-	return string(stripped) + query[limit:], true
+	return strings.IndexByte(query[first:], '\\') < 0
 }
 
 func compatibilityQueryClose(expression string, closing byte) int {
