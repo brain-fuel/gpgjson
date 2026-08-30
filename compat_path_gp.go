@@ -314,7 +314,10 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 		query = stripped
 	}
 	query = strings.TrimSuffix(query, `\`)
-	operators := []string{"!=~", "==~", "!=", ">=", "<=", "==", "!%", "=", ">", "<", "%"}
+	// `!=~` and `==~` are not operators upstream knows. It reads `!=` and
+	// leaves `~*` as the VALUE, where a leading `~` selects the truthiness
+	// comparison. Listing them here consumed the tilde and lost the query.
+	operators := []string{"!=", ">=", "<=", "==", "!%", "=", ">", "<", "%"}
 	for _, operator := range operators {
 		at := compatibilityUnescapedOperator(query, operator)
 		if at < 0 {
@@ -18489,7 +18492,14 @@ func matchesCompatibilityQueryPlan(
 		return matchesCompatibilityQuery(candidate, query)
 	}
 	if (compiled.leftPath == "" || compiled.leftPath == "@") && candidate.Type == JSON {
-		return false
+		// Upstream evaluates `qval.Get("")` for a JSON element, which is
+		// NOTHING -- an empty query path does not mean the element itself
+		// once the element is a container. It still reaches the matcher,
+		// because a `~` operand converts a missing value into a boolean and
+		// can match on that: `#(<"~*")` sees false, and the false row makes
+		// `<` true. For every other operand a missing value matches
+		// nothing, exactly as this early return used to say.
+		return matchesCompatibilityResolvedQuery(Result{}, compiled)
 	}
 	left := candidate
 	if compiled.leftPath != "" && compiled.leftPath != "@" {
@@ -18537,11 +18547,11 @@ func matchesCompatibilityResolvedQuery(
 		return compatibilityBooleanQuery(
 			left.Type == True, compiled.rightText, compiled.relation)
 	}
-	if (compiled.relation == pathquery.Greater ||
-		compiled.relation == pathquery.GreaterOrEqual ||
-		compiled.relation == pathquery.Less ||
-		compiled.relation == pathquery.LessOrEqual) &&
-		left.Type != Number && left.Type != String &&
+	// Upstream switches on the value's type and has arms for String,
+	// Number, True and False only. A Null or JSON value falls off the end
+	// and matches NOTHING, whatever the operator -- a `null` element is not
+	// `!=` a string, it is simply not comparable.
+	if left.Type != Number && left.Type != String &&
 		left.Type != True && left.Type != False {
 		return false
 	}
