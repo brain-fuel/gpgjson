@@ -303,10 +303,6 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 		return nil
 	}
 	query := trimCompatibilitySpace(expression[2:close])
-	if strings.Contains(query, `\`) && !compatibilityQueryEscapesLeftOnly(query) {
-		return nil
-	}
-	query = strings.TrimSuffix(query, `\`)
 	// `!=~` and `==~` are not operators upstream knows. It reads `!=` and
 	// leaves `~*` as the VALUE, where a leading `~` selects the truthiness
 	// comparison. Listing them here consumed the tilde and lost the query.
@@ -352,7 +348,11 @@ func compileCompatibilityQuery(expression string) *compatibilityCompiledQuery {
 		rightText := trimCompatibilitySpace(rightRaw)
 		if len(rightText) >= 2 && rightText[0] == '"' &&
 			rightText[len(rightText)-1] == '"' {
-			rightText = Parse(rightText).String()
+			// The same truncating unescape upstream applies, not Parse:
+			// `"~\A"` is the operand `~`, which then selects the truthiness
+			// comparison. Parse rejects it as invalid JSON, the tilde is
+			// never seen, and the query runs as an ordinary comparison.
+			rightText = compatibilityUnescape(rightText[1 : len(rightText)-1])
 		}
 		return &compatibilityCompiledQuery{
 			leftPath:   leftPath,
