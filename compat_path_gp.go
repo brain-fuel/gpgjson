@@ -17986,10 +17986,14 @@ func projectCompatibilityArray(array Result, remainder []compatibilityPathPart) 
 		if !projected.Exists() {
 			return true
 		}
+		// An empty projection behind a wildcard is dropped only when the
+		// component after it is a parenthetical `)#`, never when it is a
+		// bare `#`. Upstream keeps that one: `[o].#.*.#.#` is `[[]]`, the
+		// same as the named spelling `[o].#.k.#.#`, and dropping it lost a
+		// level of nesting the wildcard has no business changing.
 		if projected.Raw == "[]" && projected.synthetic &&
 			len(remainder) > 1 && remainder[0].wildcard &&
-			(remainder[1].text == "#" ||
-				strings.HasSuffix(remainder[1].text, ")#")) {
+			strings.HasSuffix(remainder[1].text, ")#") {
 			return true
 		}
 		if projected.Raw == "[[]]" && projected.synthetic &&
