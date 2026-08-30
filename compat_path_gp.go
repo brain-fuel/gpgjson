@@ -1951,6 +1951,11 @@ func evaluateCompatibilityParts(current Result, parts []compatibilityPathPart) R
 			}
 			if !parts[index].pipe && matchedComponent && !matched.Exists() &&
 				index+2 < len(parts) &&
+				// A QUERY on a non-container yields nothing and stops the
+				// path upstream, so the multipath after it is never reached:
+				// `#(*).*.#()#.[""]` is nothing, not `[]`. The recovery below
+				// is for parenthetical parts that are not queries.
+				!strings.HasPrefix(parts[index+1].text, "#(") &&
 				compatibilityParentheticalRecovery(parts[index+1].text) &&
 				(strings.HasSuffix(parts[index+1].text, ")#") ||
 					strings.HasPrefix(parts[index+1].text, "(()#[") &&
