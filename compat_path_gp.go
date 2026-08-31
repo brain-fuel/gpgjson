@@ -2706,6 +2706,46 @@ func projectCompatibilityWithPipe(array Result, remainder []compatibilityPathPar
 // A parts-level scan cannot tell those apart: it applies the skip at every
 // `#` component and over-skips. So the text is rebuilt here, split by a
 // transcription of splitPossiblePipe, and the offset mapped back to a part.
+// compatibilitySquashLength mirrors upstream's squash for the one use
+// splitPossiblePipe makes of it: how many bytes a balanced group occupies,
+// counting from a text whose FIRST byte is taken as the opener. When the
+// group never closes it consumes everything, which is what stops a split.
+func compatibilitySquashLength(text string) int {
+	if text == "" {
+		return 0
+	}
+	index, depth := 0, 0
+	if text[0] != '"' {
+		index, depth = 1, 1
+	}
+	for ; index < len(text); index++ {
+		switch text[index] {
+		case '"':
+			index++
+			for ; index < len(text); index++ {
+				if text[index] == '\\' {
+					index++
+					continue
+				}
+				if text[index] == '"' {
+					break
+				}
+			}
+			if depth == 0 {
+				return index + 1
+			}
+		case '{', '[', '(':
+			depth++
+		case '}', ']', ')':
+			depth--
+			if depth == 0 {
+				return index + 1
+			}
+		}
+	}
+	return len(text)
+}
+
 func compatibilityContinuationPipe(parts []compatibilityPathPart) int {
 	if len(parts) == 0 || parts[0].rest == "" {
 		return -1
@@ -2719,42 +2759,23 @@ func compatibilityContinuationPipe(parts []compatibilityPathPart) int {
 	}
 	split := -1
 	if len(path) > 0 && path[0] == '{' {
-		// Upstream special-cases a leading object: it squashes the balanced
-		// `{...}` and splits ONLY when a pipe follows it immediately. So
-		// `{0}.0|[]` does not split, and the pipe stays inside the
-		// projection to be applied per element.
-		depth := 0
-		end := -1
-		for index := 0; index < len(path) && end < 0; index++ {
-			switch path[index] {
-			case '\\':
-				index++
-			case '"':
-				index++
-				for ; index < len(path); index++ {
-					if path[index] == '\\' {
-						index++
-						continue
-					}
-					if path[index] == '"' {
-						break
-					}
-				}
-			case '{', '[', '(':
-				depth++
-			case '}', ']', ')':
-				depth--
-				if depth == 0 {
-					end = index
-				}
-			}
-		}
-		if end < 0 || end+1 >= len(path) || path[end+1] != '|' {
+		// Upstream squashes the leading object and splits only when a pipe
+		// follows it immediately -- but it calls squash on path[1:], and
+		// squash treats ITS first byte as the opener. The off-by-one is
+		// load bearing: for `{}|0` the squash starts at `}` and never
+		// closes, so nothing is squashed and nothing splits, which is why
+		// `#.{}|0` keeps its pipe inside the projection and collects `[]`.
+		sub := path[1:]
+		squashed := compatibilitySquashLength(sub)
+		if squashed >= len(sub) {
 			return -1
 		}
-		split = end + 1
+		after := squashed + 1
+		if after >= len(path) || path[after] != '|' {
+			return -1
+		}
 		for index := range parts {
-			if starts[index] == split+1 {
+			if starts[index] == after+1 {
 				return index
 			}
 		}

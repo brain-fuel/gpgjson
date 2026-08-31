@@ -129,9 +129,21 @@ pipe inside the projection, applying it per element to give `[[],[]]`,
 where a component-level scan handed the pipe to the collected array and
 gave `[]`.
 
-`compatibilityProjectionPipe` is no longer on the projection path. The
-heuristics in `projectCompatibilityArray` remain, and are the next thing to
-retire against this model if the fuzzer reaches them.
+`compatibilityProjectionPipe` is no longer on the projection path, and the
+split runs over the ORIGINAL path text carried on each part rather than a
+reconstruction -- a rebuild cannot restore what the component splitter
+consumed, and `\.#|0` and `.#|0` split differently while their components
+are identical.
+
+One more quirk had to be transcribed rather than reasoned about. The `{`
+case calls `squash(path[1:])`, and `squash` takes ITS first byte as the
+opener -- so for `{}|0` the squash begins at `}`, never closes, consumes
+everything, and nothing splits. That is why `#.{}|0` keeps its pipe inside
+the projection and collects `[]` where a sensible reading of the code
+splits and gives `{}`.
+
+The heuristics in `projectCompatibilityArray` remain, and are the next
+thing to retire against this model if the fuzzer reaches them.
 
 ## What is already exact
 
