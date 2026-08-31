@@ -2657,7 +2657,12 @@ func compatibilityOnlyEscapedDots(part string) bool {
 }
 
 func projectCompatibilityWithPipe(array Result, remainder []compatibilityPathPart) Result {
-	if index := compatibilityProjectionPipe(remainder); index >= 0 {
+	// The alogkey call site: upstream splits the projection's remainder with
+	// the same splitPossiblePipe it uses for a query continuation, over the
+	// remainder TEXT. Deciding over components instead over-skips, which is
+	// how `{0}.0|[]` lost its pipe to the collected array when upstream
+	// keeps it inside and applies it per element.
+	if index := compatibilityContinuationPipe(remainder); index >= 0 {
 		if index > 0 &&
 			(strings.Contains(remainder[0].text, ".#(") &&
 				!strings.Contains(remainder[0].text, ")") ||
@@ -2708,6 +2713,48 @@ func compatibilityContinuationPipe(parts []compatibilityPathPart) int {
 	}
 	path := builder.String()
 	split := -1
+	if len(path) > 0 && path[0] == '{' {
+		// Upstream special-cases a leading object: it squashes the balanced
+		// `{...}` and splits ONLY when a pipe follows it immediately. So
+		// `{0}.0|[]` does not split, and the pipe stays inside the
+		// projection to be applied per element.
+		depth := 0
+		end := -1
+		for index := 0; index < len(path) && end < 0; index++ {
+			switch path[index] {
+			case '\\':
+				index++
+			case '"':
+				index++
+				for ; index < len(path); index++ {
+					if path[index] == '\\' {
+						index++
+						continue
+					}
+					if path[index] == '"' {
+						break
+					}
+				}
+			case '{', '[', '(':
+				depth++
+			case '}', ']', ')':
+				depth--
+				if depth == 0 {
+					end = index
+				}
+			}
+		}
+		if end < 0 || end+1 >= len(path) || path[end+1] != '|' {
+			return -1
+		}
+		split = end + 1
+		for index := range parts {
+			if starts[index] == split+1 {
+				return index
+			}
+		}
+		return -1
+	}
 	for index := 0; index < len(path); index++ {
 		if path[index] == '\\' {
 			index++

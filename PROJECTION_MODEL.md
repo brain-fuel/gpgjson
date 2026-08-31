@@ -119,13 +119,19 @@ upstream applies it. It works on rebuilt TEXT rather than on components
 because a component-level scan applies the skip at every `#` and over-skips;
 the offset is then mapped back to a part index.
 
-## Still to do
+## Both call sites are ported
 
-The alogkey call site is not yet ported — projections still decide their
-remainder through `compatibilityProjectionPipe` over components, which is
-the same over-skipping approximation. It happens to agree everywhere
-measured, but it agrees by construction rather than by transcription, and
-it is the remaining piece of this model.
+`compatibilityContinuationPipe` now serves both: the query continuation and
+the alogkey, over rebuilt text, including upstream's special case for a
+remainder that begins with `{` — squash the balanced object and split only
+if a pipe follows it immediately. That case is why `{0}.0|[]` keeps its
+pipe inside the projection, applying it per element to give `[[],[]]`,
+where a component-level scan handed the pipe to the collected array and
+gave `[]`.
+
+`compatibilityProjectionPipe` is no longer on the projection path. The
+heuristics in `projectCompatibilityArray` remain, and are the next thing to
+retire against this model if the fuzzer reaches them.
 
 ## What is already exact
 
