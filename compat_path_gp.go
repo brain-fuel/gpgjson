@@ -718,7 +718,7 @@ func compatibilityLiteral(literal string) Result {
 func splitCompatibilityPath(path string) ([]compatibilityPathPart, bool) {
 	if len(path) > 1 && path[0] == '!' {
 		end := compatibilityStaticEnd(path)
-		parts := []compatibilityPathPart{{text: path[:end]}}
+		parts := []compatibilityPathPart{{text: path[:end], rest: path}}
 		if end == len(path) {
 			return parts, true
 		}
