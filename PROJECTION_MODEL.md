@@ -1,9 +1,8 @@
 # Projection model — the remaining compatibility gap
 
-Every divergence `FuzzDynamicPathDifferential` still finds is one class:
-how a projection's state composes with what follows it. This note records
-what upstream actually does, so the work starts from a model rather than
-from another round of path-shape heuristics.
+How a projection's state composes with what follows it was the last class
+of divergence `FuzzDynamicPathDifferential` could find. This note records
+what upstream actually does, and what has been ported from it.
 
 It is written because heuristics have stopped paying. The last two attempts
 each fixed their case and regressed another, and the reason is structural:
@@ -89,21 +88,44 @@ and to split it with a port of `splitPossiblePipe`, so a projection's
 per-element path and its trailing pipe come from the same rule upstream
 uses rather than from a reconstruction.
 
-## Open question, unresolved
+## The contradiction, resolved
 
-The model above does not yet predict `*.[*].#[0].#.#.#|0`, which is `""`
-upstream and `[]` here. Tracing gives: `*.[*]` is `[[friend, friend]]`,
-`#[0]` is a single-result query selecting the friends array, and the
-remaining `#.#.#|0` should become `alogkey = "#.#|0"`, which
-`splitPossiblePipe` does not split, applied per friend. Each friend is an
-object, so `#` yields nothing and no slot is contributed — which predicts
-`[]`, the answer this package already gives.
+The note previously recorded that the model did not predict
+`*.[*].#[0].#.#.#|0` — `""` upstream, `[]` here. It is resolved, and the
+resolution was the missing piece.
 
-So either `#[0]` does not leave what the trace suggests, or the outer
-`[*]` multipath changes what the query sees. **Resolve that before
-refactoring** — it is the one place the written model and the observed
-behaviour disagree, and building on a model that is wrong here would
-propagate the error into everything the refactor touches.
+There are TWO call sites for `splitPossiblePipe`, on two different strings:
+
+- **the alogkey** (gjson.go:1721), when a projection collects; and
+- **the query continuation** (gjson.go:1551), when a query matches and
+  there is more path.
+
+The decisive experiment: evaluating the tail `#.#.#|0` fresh against the
+intermediate's raw JSON gives `[]`, while the same tail inside the full
+path gives `""`. State was not being carried — the two are simply
+different strings reaching different call sites.
+
+After the query `#[0]` matches, the continuation is `#.#.#|0`, and the scan
+consumes the FIRST `.#`, lands on the `.` that follows, and the loop's own
+step carries it past — so the second `.#` never triggers the skip and the
+`|` splits. Left `#.#.#` runs on the matched element and yields `[]`; right
+`0` indexes that empty array and yields nothing. Evaluated fresh instead,
+`#` leads and the path becomes an alogkey of `#.#|0`, where the scan lands
+directly on the `|` and steps past it, so it never splits and the pipe stays
+inside the projection — giving `[]`.
+
+`compatibilityContinuationPipe` is that rule, transcribed, and applied where
+upstream applies it. It works on rebuilt TEXT rather than on components
+because a component-level scan applies the skip at every `#` and over-skips;
+the offset is then mapped back to a part index.
+
+## Still to do
+
+The alogkey call site is not yet ported — projections still decide their
+remainder through `compatibilityProjectionPipe` over components, which is
+the same over-skipping approximation. It happens to agree everywhere
+measured, but it agrees by construction rather than by transcription, and
+it is the remaining piece of this model.
 
 ## What is already exact
 

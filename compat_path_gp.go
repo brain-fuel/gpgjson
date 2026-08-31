@@ -1942,6 +1942,19 @@ func evaluateCompatibilityParts(current Result, parts []compatibilityPathPart) R
 				}
 				return projectCompatibilityWithPipe(selected, parts[index+1:])
 			}
+			// Upstream splits the continuation after a query matches: the
+			// left side runs on the matched element, the right side pipes
+			// onto the result. `#[0].#.#.#|0` therefore evaluates `#.#.#`
+			// and indexes the empty array it yields, giving nothing --
+			// where evaluating the same tail fresh keeps the pipe inside
+			// the projection and yields `[]`.
+			if selected.Exists() && index+1 < len(parts) {
+				rest := parts[index+1:]
+				if at := compatibilityContinuationPipe(rest); at > 0 {
+					left := evaluateCompatibilityParts(selected, rest[:at])
+					return evaluateCompatibilityParts(left, rest[at:])
+				}
+			}
 			current = selected
 			if !current.Exists() {
 				if index+1 < len(parts) && parts[index+1].pipe {
@@ -2661,6 +2674,110 @@ func projectCompatibilityWithPipe(array Result, remainder []compatibilityPathPar
 		return evaluateCompatibilityParts(projected, remainder[index:])
 	}
 	return projectCompatibilityArray(array, remainder)
+}
+
+// compatibilityContinuationPipe splits a query's CONTINUATION the way
+// upstream splits it, and is the one place the parts model cannot answer on
+// its own.
+//
+// After a query matches, upstream runs splitPossiblePipe over the remaining
+// path TEXT (gjson.go:1551): the left side continues on the matched element
+// and the right side becomes a pipe on the result. That rule is byte-wise,
+// not component-wise, and the difference is observable. Over `#.#.#|0` the
+// scan consumes the FIRST `.#`, lands on the `.` that follows, and the
+// loop's own step carries it past -- so the second `.#` never triggers the
+// skip and the `|` splits. Over the alogkey `#.#|0` the same scan lands
+// directly on the `|` and steps past it, so that one never splits.
+//
+// A parts-level scan cannot tell those apart: it applies the skip at every
+// `#` component and over-skips. So the text is rebuilt here, split by a
+// transcription of splitPossiblePipe, and the offset mapped back to a part.
+func compatibilityContinuationPipe(parts []compatibilityPathPart) int {
+	var builder strings.Builder
+	starts := make([]int, len(parts))
+	for index, part := range parts {
+		if index > 0 {
+			if part.explicitPipe {
+				builder.WriteByte('|')
+			} else {
+				builder.WriteByte('.')
+			}
+		}
+		starts[index] = builder.Len()
+		builder.WriteString(part.text)
+	}
+	path := builder.String()
+	split := -1
+	for index := 0; index < len(path); index++ {
+		if path[index] == '\\' {
+			index++
+			continue
+		}
+		if path[index] == '|' {
+			split = index
+			break
+		}
+		if path[index] != '.' {
+			continue
+		}
+		if index == len(path)-1 {
+			return -1
+		}
+		if path[index+1] != '#' {
+			continue
+		}
+		index += 2
+		if index == len(path) {
+			return -1
+		}
+		if path[index] != '[' && path[index] != '(' {
+			continue
+		}
+		open, close := byte('['), byte(']')
+		if path[index] == '(' {
+			open, close = '(', ')'
+		}
+		index++
+		depth := 1
+		for ; index < len(path); index++ {
+			if path[index] == '\\' {
+				index++
+				continue
+			}
+			if path[index] == open {
+				depth++
+				continue
+			}
+			if path[index] == close {
+				depth--
+				if depth == 0 {
+					break
+				}
+				continue
+			}
+			if path[index] == '"' {
+				index++
+				for ; index < len(path); index++ {
+					if path[index] == '\\' {
+						index++
+						continue
+					}
+					if path[index] == '"' {
+						break
+					}
+				}
+			}
+		}
+	}
+	if split < 0 {
+		return -1
+	}
+	for index := range parts {
+		if starts[index] == split+1 {
+			return index
+		}
+	}
+	return -1
 }
 
 func compatibilityProjectionPipe(parts []compatibilityPathPart) int {
