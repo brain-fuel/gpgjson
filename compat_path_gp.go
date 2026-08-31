@@ -25,6 +25,12 @@ type compatibilityPathPart struct {
 	simplePath     string
 	simpleCount    int
 	query          *compatibilityCompiledQuery
+	// rest is the ORIGINAL path text from this component onward. Upstream
+	// splits a projection's remainder and a query's continuation over text,
+	// and rebuilding that text from components loses what the splitter
+	// consumed -- an escape most of all, since `\.#|0` and `.#|0` split
+	// differently and the components are identical.
+	rest string
 }
 
 type compatibilityCompiledQuery struct {
@@ -740,9 +746,11 @@ func splitCompatibilityPath(path string) ([]compatibilityPathPart, bool) {
 	componentEscapedDot := false
 	componentLeadingEscaped := false
 	componentWildcard := false
-	flush := func() {
+	componentStart := 0
+	flush := func(start int) {
 		text := builder.String()
 		parts = append(parts, compatibilityPathPart{
+			rest: path[start:],
 			text: text, pipe: nextPipe, escaped: componentEscaped,
 			escapedDot:     componentEscapedDot,
 			leadingEscaped: componentLeadingEscaped,
@@ -819,7 +827,8 @@ func splitCompatibilityPath(path string) ([]compatibilityPathPart, bool) {
 						}
 					}
 				}
-				flush()
+				flush(componentStart)
+				componentStart = i + 1
 				nextPipe = value == '|' ||
 					dotCanPipe && compatibilityDotPiper(path[i+1:])
 				nextExplicitPipe = value == '|'
@@ -844,7 +853,7 @@ func splitCompatibilityPath(path string) ([]compatibilityPathPart, bool) {
 	if quoted != 0 || depth != 0 {
 		return nil, false
 	}
-	flush()
+	flush(componentStart)
 	return parts, true
 }
 
@@ -2698,20 +2707,16 @@ func projectCompatibilityWithPipe(array Result, remainder []compatibilityPathPar
 // `#` component and over-skips. So the text is rebuilt here, split by a
 // transcription of splitPossiblePipe, and the offset mapped back to a part.
 func compatibilityContinuationPipe(parts []compatibilityPathPart) int {
-	var builder strings.Builder
+	if len(parts) == 0 || parts[0].rest == "" {
+		return -1
+	}
+	// The ORIGINAL text, not a reconstruction: what the splitter consumed
+	// cannot be put back from components, and an escape changes the answer.
+	path := parts[0].rest
 	starts := make([]int, len(parts))
 	for index, part := range parts {
-		if index > 0 {
-			if part.explicitPipe {
-				builder.WriteByte('|')
-			} else {
-				builder.WriteByte('.')
-			}
-		}
-		starts[index] = builder.Len()
-		builder.WriteString(part.text)
+		starts[index] = len(path) - len(part.rest)
 	}
-	path := builder.String()
 	split := -1
 	if len(path) > 0 && path[0] == '{' {
 		// Upstream special-cases a leading object: it squashes the balanced
